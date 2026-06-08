@@ -1,0 +1,1220 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>직접 빚어내는 원자 시뮬레이션</title>
+    
+    <!-- PWA Meta Tags -->
+    <meta name="theme-color" content="#0f172a">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚛️</text></svg>">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚛️</text></svg>">
+
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700;900&display=swap" rel="stylesheet">
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: { sans: ['"Noto Sans KR"', 'sans-serif'] },
+                    colors: {
+                        primary: '#3b82f6',
+                        secondary: '#8b5cf6',
+                        darkBg: '#0f172a',
+                        proton: '#ef4444',
+                        neutron: '#64748b',
+                        electron: '#06b6d4'
+                    },
+                    animation: {
+                        'spin-slow': 'spin 8s linear infinite',
+                        'pulse-glow': 'pulse-glow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+                    },
+                    keyframes: {
+                        'pulse-glow': {
+                            '0%, 100%': { opacity: 1, filter: 'brightness(1)' },
+                            '50%': { opacity: .8, filter: 'brightness(1.5)' },
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- React, Babel & Three.js -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <style>
+        body { background-color: #0f172a; color: #f8fafc; overflow: hidden; touch-action: none; }
+        .glass-panel { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.1); }
+        .glass-button { background: linear-gradient(135deg, rgba(59, 130, 246, 0.8), rgba(139, 92, 246, 0.8)); backdrop-filter: blur(4px); transition: all 0.2s; }
+        .glass-button:hover { filter: brightness(1.1); transform: translateY(-1px); }
+        .glass-button:active { transform: scale(0.95); }
+        canvas { touch-action: none; outline: none; }
+        
+        /* Custom Scrollbar */
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: rgba(0,0,0,0.1); }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 10px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.4); }
+
+        /* Controls Button */
+        .ctrl-btn { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 6px; background: rgba(255,255,255,0.1); transition: all 0.1s; font-weight: bold; }
+        .ctrl-btn:hover:not(:disabled) { background: rgba(255,255,255,0.2); cursor: pointer; }
+        .ctrl-btn:active:not(:disabled) { transform: scale(0.9); }
+        .ctrl-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        // ==========================================
+        // 1. Constants & Data
+        // ==========================================
+        const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzJXcPlZr1sCJYXWfTnw_fzBucmOl2tPrtzDNqBFmbiFwwGGnd29IchiycceVc7hXmx/exec"; // [교사 설정란] Apps Script Web App URL 입력
+
+        const ELEMENTS = [
+            { name: "입자 없음", symbol: "?" },
+            { name: "수소", symbol: "H" }, { name: "헬륨", symbol: "He" }, { name: "리튬", symbol: "Li" },
+            { name: "베릴륨", symbol: "Be" }, { name: "붕소", symbol: "B" }, { name: "탄소", symbol: "C" },
+            { name: "질소", symbol: "N" }, { name: "산소", symbol: "O" }, { name: "플루오린", symbol: "F" },
+            { name: "네온", symbol: "Ne" }, { name: "나트륨", symbol: "Na" }, { name: "마그네슘", symbol: "Mg" },
+            { name: "알루미늄", symbol: "Al" }, { name: "규소", symbol: "Si" }, { name: "인", symbol: "P" },
+            { name: "황", symbol: "S" }, { name: "염소", symbol: "Cl" }, { name: "아르곤", symbol: "Ar" },
+            { name: "칼륨", symbol: "K" }, { name: "칼슘", symbol: "Ca" }
+        ];
+
+        // 동위원소 및 안정성 데이터
+        const ISOTOPE_DATA = {
+            1: { name: '수소(H)', isotopes: {0: '프로튬(H-1)', 1: '중수소(H-2)', 2: '삼중수소(H-3)'}, stable: [0, 1], unstable: [2] },
+            2: { name: '헬륨(He)', isotopes: {1: '헬륨-3', 2: '헬륨-4', 3: '헬륨-5', 4: '헬륨-6'}, stable: [1, 2], unstable: [3, 4] },
+            3: { name: '리튬(Li)', isotopes: {3: '리튬-6', 4: '리튬-7', 5: '리튬-8', 6: '리튬-9'}, stable: [3, 4], unstable: [5, 6] },
+            4: { name: '베릴륨(Be)', isotopes: {3: '베릴륨-7', 4: '베릴륨-8', 5: '베릴륨-9', 6: '베릴륨-10'}, stable: [5], unstable: [3, 4, 6] },
+            5: { name: '붕소(B)', isotopes: {4: '붕소-9', 5: '붕소-10', 6: '붕소-11', 7: '붕소-12'}, stable: [5, 6], unstable: [4, 7] },
+            6: { name: '탄소(C)', isotopes: {5: '탄소-11', 6: '탄소-12', 7: '탄소-13', 8: '탄소-14'}, stable: [6, 7], unstable: [5, 8] },
+            7: { name: '질소(N)', isotopes: {6: '질소-13', 7: '질소-14', 8: '질소-15', 9: '질소-16'}, stable: [7, 8], unstable: [6, 9] },
+            8: { name: '산소(O)', isotopes: {6: '산소-14', 7: '산소-15', 8: '산소-16', 9: '산소-17', 10: '산소-18'}, stable: [8, 9, 10], unstable: [6, 7] },
+            9: { name: '플루오린(F)', isotopes: {10: '플루오린-19'}, stable: [10], unstable: [8, 9, 11] },
+            10: { name: '네온(Ne)', isotopes: {10: '네온-20', 11: '네온-21', 12: '네온-22'}, stable: [10, 11, 12], unstable: [9, 13] },
+            11: { name: '나트륨(Na)', isotopes: {12: '나트륨-23'}, stable: [12], unstable: [11, 13] },
+            12: { name: '마그네슘(Mg)', isotopes: {12: '마그네슘-24', 13: '마그네슘-25', 14: '마그네슘-26'}, stable: [12, 13, 14], unstable: [11, 15] }
+        };
+
+        const QUIZ_POOL = [
+            { q: "원자의 종류는 원자핵을 구성하는 양성자 수에 의해 결정된다.", a: true, explain: "양성자 수가 원자 번호를 결정하며, 이에 따라 원소의 종류가 달라집니다." },
+            { q: "전자는 원자핵 속에 양성자와 함께 뭉쳐 있다.", a: false, explain: "전자는 원자핵 주위의 궤도(전자껍질)를 돌고 있습니다." },
+            { q: "원자가 전기적으로 중성일 때, 양성자 수와 전자 수는 같다.", a: true, explain: "양성자의 (+)전하량과 전자의 (-)전하량이 같아야 중성이 됩니다." },
+            { q: "중성자는 전하를 띠지 않는 입자이다.", a: true, explain: "중성자는 이름 그대로 전기적으로 중성(0)입니다." },
+            { q: "전자는 양성자보다 질량이 훨씬 무겁다.", a: false, explain: "전자의 질량은 양성자의 약 1/1836로 매우 가볍습니다." },
+            { q: "수소(H) 원자의 양성자 수는 1개이다.", a: true, explain: "수소는 원자 번호 1번으로 양성자가 1개 있습니다." },
+            { q: "원자핵 전체는 (-) 전하를 띤다.", a: false, explain: "원자핵은 (+)전하를 띤 양성자와 전하가 없는 중성자로 구성되어 전체적으로 (+)전하를 띱니다." }
+        ];
+
+        // ==========================================
+        // 2-1. Vanilla JS Engine: 2D Builder
+        // ==========================================
+        class AtomEngine2D {
+            constructor(canvas, onStateUpdate) {
+                this.canvas = canvas;
+                this.ctx = canvas.getContext('2d');
+                this.onStateUpdate = onStateUpdate;
+                this.animationId = null;
+                this.width = 0;
+                this.height = 0;
+
+                this.protons = [];
+                this.neutrons = [];
+                this.electrons = [];
+                
+                this.nucleusRadius = 30;
+                this.shellRadii = [80, 140, 200, 260];
+                this.maxElectronsPerShell = [2, 8, 8, 18];
+                this.particleSize = 12;
+                
+                this.isDragging = false;
+                this.dragParticle = null;
+                this.dragOffset = {x:0, y:0};
+
+                this.baskets = {
+                    proton: { type: 'proton', color: '#ef4444', label: '양성자 (+)' },
+                    neutron: { type: 'neutron', color: '#64748b', label: '중성자 (0)' },
+                    electron: { type: 'electron', color: '#06b6d4', label: '전자 (-)' }
+                };
+
+                this.init();
+            }
+
+            init() {
+                this.resize();
+                this.resizeObserver = new ResizeObserver(() => this.resize());
+                this.resizeObserver.observe(this.canvas.parentElement);
+                
+                const handleDown = (e) => { e.preventDefault(); const pos = this.getEventPos(e); this.onDown(pos.x, pos.y); };
+                const handleMove = (e) => { e.preventDefault(); const pos = this.getEventPos(e); this.onMove(pos.x, pos.y); };
+                const handleUp = (e) => { e.preventDefault(); this.onUp(); };
+
+                this.canvas.addEventListener('mousedown', handleDown);
+                this.canvas.addEventListener('mousemove', handleMove);
+                this.canvas.addEventListener('mouseup', handleUp);
+                this.canvas.addEventListener('touchstart', handleDown, {passive: false});
+                this.canvas.addEventListener('touchmove', handleMove, {passive: false});
+                this.canvas.addEventListener('touchend', handleUp, {passive: false});
+
+                this.start();
+            }
+
+            cleanup() { 
+                cancelAnimationFrame(this.animationId); 
+                if (this.resizeObserver) this.resizeObserver.disconnect();
+            }
+
+            resize() {
+                const rect = this.canvas.parentElement.getBoundingClientRect();
+                this.canvas.width = rect.width;
+                this.canvas.height = rect.height;
+                this.width = rect.width;
+                this.height = rect.height;
+
+                if (this.width === 0 || this.height === 0) return;
+
+                const basketW = Math.min(120, this.width / 3.5);
+                const basketH = 60;
+                const startY = this.height - basketH - 20;
+                const spacing = (this.width - (basketW * 3)) / 4;
+
+                this.baskets.proton.x = spacing; this.baskets.proton.y = startY; this.baskets.proton.w = basketW; this.baskets.proton.h = basketH;
+                this.baskets.neutron.x = spacing * 2 + basketW; this.baskets.neutron.y = startY; this.baskets.neutron.w = basketW; this.baskets.neutron.h = basketH;
+                this.baskets.electron.x = spacing * 3 + basketW * 2; this.baskets.electron.y = startY; this.baskets.electron.w = basketW; this.baskets.electron.h = basketH;
+
+                this.centerX = this.width / 2;
+                this.centerY = (this.height - basketH - 40) / 2;
+                
+                const minDim = Math.max(0.1, Math.min(this.width, this.height - basketH));
+                this.shellRadii[0] = minDim * 0.12;
+                this.shellRadii[1] = minDim * 0.22;
+                this.shellRadii[2] = minDim * 0.32;
+                this.shellRadii[3] = minDim * 0.42;
+                this.nucleusRadius = minDim * 0.04;
+                this.particleSize = minDim * 0.022;
+            }
+
+            getEventPos(e) {
+                const rect = this.canvas.getBoundingClientRect();
+                const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+                const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+                return { x: clientX - rect.left, y: clientY - rect.top };
+            }
+
+            syncParticles(pCount, nCount, eCount) {
+                if (this.protons.length === pCount && this.neutrons.length === nCount && this.electrons.length === eCount) return;
+
+                while (this.protons.length < pCount) {
+                    let p = { type: 'proton', id: Math.random() };
+                    this.arrangeNucleusParticle(p);
+                    this.protons.push(p);
+                }
+                while (this.protons.length > pCount) this.protons.pop();
+
+                while (this.neutrons.length < nCount) {
+                    let n = { type: 'neutron', id: Math.random() };
+                    this.arrangeNucleusParticle(n);
+                    this.neutrons.push(n);
+                }
+                while (this.neutrons.length > nCount) this.neutrons.pop();
+
+                while (this.electrons.length < eCount) {
+                    let e = { type: 'electron', shell: 0, id: Math.random() };
+                    let targetShell = 0, currentCap = 0;
+                    for (let i = 0; i < this.maxElectronsPerShell.length; i++) {
+                        currentCap += this.maxElectronsPerShell[i];
+                        if (this.electrons.length < currentCap) { targetShell = i; break; }
+                    }
+                    e.shell = targetShell;
+                    this.electrons.push(e);
+                }
+                while (this.electrons.length > eCount) this.electrons.pop();
+
+                this.recalculateElectronAngles();
+            }
+
+            onDown(x, y) {
+                let clickedExisting = false;
+                const allParticles = [...this.electrons, ...this.neutrons, ...this.protons];
+                for (let i = allParticles.length - 1; i >= 0; i--) {
+                    const p = allParticles[i];
+                    const px = p.type === 'electron' ? p.visualX : p.x;
+                    const py = p.type === 'electron' ? p.visualY : p.y;
+                    
+                    if (Math.hypot(x - px, y - py) < this.particleSize * 1.5) {
+                        this.isDragging = true;
+                        this.dragParticle = p;
+                        this.dragOffset = { x: px - x, y: py - y };
+                        
+                        if (p.type === 'proton') this.protons = this.protons.filter(item => item !== p);
+                        if (p.type === 'neutron') this.neutrons = this.neutrons.filter(item => item !== p);
+                        if (p.type === 'electron') {
+                            this.electrons = this.electrons.filter(item => item !== p);
+                            this.recalculateElectronAngles();
+                        }
+                        this.updateReactState();
+                        clickedExisting = true;
+                        break;
+                    }
+                }
+
+                if (!clickedExisting) {
+                    for (const key in this.baskets) {
+                        const b = this.baskets[key];
+                        if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) {
+                            this.isDragging = true;
+                            this.dragParticle = { type: b.type, x: x, y: y, visualX: x, visualY: y, id: Math.random() };
+                            this.dragOffset = {x: 0, y: 0};
+                            break;
+                        }
+                    }
+                }
+            }
+
+            onMove(x, y) {
+                if (this.isDragging && this.dragParticle) {
+                    this.dragParticle.x = x + this.dragOffset.x;
+                    this.dragParticle.y = y + this.dragOffset.y;
+                    this.dragParticle.visualX = this.dragParticle.x;
+                    this.dragParticle.visualY = this.dragParticle.y;
+                }
+            }
+
+            onUp() {
+                if (this.isDragging && this.dragParticle) {
+                    const distToCenter = Math.hypot(this.dragParticle.x - this.centerX, this.dragParticle.y - this.centerY);
+                    
+                    if (this.dragParticle.type === 'proton' || this.dragParticle.type === 'neutron') {
+                        if (distToCenter < this.nucleusRadius * 3 && (this.protons.length + this.neutrons.length) < 40) {
+                            this.arrangeNucleusParticle(this.dragParticle);
+                            if (this.dragParticle.type === 'proton') this.protons.push(this.dragParticle);
+                            if (this.dragParticle.type === 'neutron') this.neutrons.push(this.dragParticle);
+                        }
+                    } else if (this.dragParticle.type === 'electron') {
+                        const maxE = this.maxElectronsPerShell.reduce((a,b)=>a+b,0);
+                        const outermostRadius = this.shellRadii[this.shellRadii.length - 1];
+                        if (distToCenter < outermostRadius + 40 && this.electrons.length < maxE) {
+                            let targetShell = 0, currentCount = 0;
+                            for (let i = 0; i < this.maxElectronsPerShell.length; i++) {
+                                currentCount += this.maxElectronsPerShell[i];
+                                if (this.electrons.length < currentCount) { targetShell = i; break; }
+                            }
+                            this.dragParticle.shell = targetShell;
+                            this.electrons.push(this.dragParticle);
+                            this.recalculateElectronAngles();
+                        }
+                    }
+                    this.updateReactState();
+                }
+                this.isDragging = false;
+                this.dragParticle = null;
+            }
+
+            arrangeNucleusParticle(p) {
+                const angle = Math.random() * Math.PI * 2;
+                const r = Math.random() * this.nucleusRadius;
+                p.x = this.centerX + Math.cos(angle) * r;
+                p.y = this.centerY + Math.sin(angle) * r;
+            }
+
+            recalculateElectronAngles() {
+                let counts = new Array(this.maxElectronsPerShell.length).fill(0);
+                this.electrons.forEach(e => { e.shellIndex = counts[e.shell]; counts[e.shell]++; });
+                this.electrons.forEach(e => { e.baseAngle = counts[e.shell] > 0 ? (Math.PI * 2 / counts[e.shell]) * e.shellIndex : 0; });
+            }
+
+            updateReactState() {
+                if (this.onStateUpdate) {
+                    this.onStateUpdate(this.protons.length, this.neutrons.length, this.electrons.length);
+                }
+            }
+
+            start() {
+                const loop = (timestamp) => {
+                    this.update(timestamp);
+                    this.draw();
+                    this.animationId = requestAnimationFrame(loop);
+                };
+                this.animationId = requestAnimationFrame(loop);
+            }
+
+            update(timestamp) {
+                const speed = timestamp * 0.001;
+                this.electrons.forEach(e => {
+                    const radius = this.shellRadii[e.shell];
+                    const angle = e.baseAngle + speed * (1 / (e.shell + 1));
+                    e.visualX = this.centerX + Math.cos(angle) * radius;
+                    e.visualY = this.centerY + Math.sin(angle) * radius;
+                });
+            }
+
+            draw() {
+                if (this.width === 0 || this.height === 0) return;
+
+                this.ctx.clearRect(0, 0, this.width, this.height);
+
+                this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+                this.ctx.lineWidth = 2;
+                this.ctx.setLineDash([5, 5]);
+                for (let r of this.shellRadii) {
+                    this.ctx.beginPath(); this.ctx.arc(this.centerX, this.centerY, r, 0, Math.PI * 2); this.ctx.stroke();
+                }
+                this.ctx.setLineDash([]);
+
+                for (const key in this.baskets) {
+                    const b = this.baskets[key];
+                    this.ctx.fillStyle = 'rgba(255, 255, 255, 0.05)'; this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+                    this.ctx.lineWidth = 1;
+                    this.ctx.beginPath(); this.ctx.roundRect(b.x, b.y, b.w, b.h, 10); this.ctx.fill(); this.ctx.stroke();
+                    this.ctx.fillStyle = 'rgba(255, 255, 255, 0.7)'; this.ctx.font = '14px "Noto Sans KR"';
+                    this.ctx.textAlign = 'center'; this.ctx.textBaseline = 'middle';
+                    this.ctx.fillText(b.label, b.x + b.w/2, b.y + b.h/2 + 15);
+                    this.drawParticle(b.x + b.w/2, b.y + b.h/2 - 10, b.type, true);
+                }
+
+                const gradient = this.ctx.createRadialGradient(this.centerX, this.centerY, 0, this.centerX, this.centerY, this.nucleusRadius*2);
+                gradient.addColorStop(0, 'rgba(255, 255, 255, 0.05)'); gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+                this.ctx.fillStyle = gradient;
+                this.ctx.beginPath(); this.ctx.arc(this.centerX, this.centerY, this.nucleusRadius*2, 0, Math.PI*2); this.ctx.fill();
+
+                this.neutrons.forEach(p => this.drawParticle(p.x, p.y, p.type));
+                this.protons.forEach(p => this.drawParticle(p.x, p.y, p.type));
+                this.electrons.forEach(p => this.drawParticle(p.visualX, p.visualY, p.type));
+
+                if (this.isDragging && this.dragParticle) {
+                    this.ctx.shadowBlur = 15; this.ctx.shadowColor = this.baskets[this.dragParticle.type].color;
+                    this.drawParticle(this.dragParticle.x, this.dragParticle.y, this.dragParticle.type);
+                    this.ctx.shadowBlur = 0;
+                }
+            }
+
+            drawParticle(x, y, type, isIcon=false) {
+                if (!isFinite(x) || !isFinite(y)) return;
+
+                const colorMap = { proton: '#ef4444', neutron: '#64748b', electron: '#06b6d4' };
+                const symbolMap = { proton: '+', neutron: '0', electron: '-' };
+                const size = isIcon ? this.particleSize * 1.2 : this.particleSize;
+
+                this.ctx.fillStyle = colorMap[type];
+                this.ctx.beginPath(); this.ctx.arc(x, y, size, 0, Math.PI * 2); this.ctx.fill();
+
+                const grad = this.ctx.createRadialGradient(x - size*0.3, y - size*0.3, size*0.1, x, y, size);
+                grad.addColorStop(0, 'rgba(255,255,255,0.6)'); grad.addColorStop(1, 'rgba(255,255,255,0)');
+                this.ctx.fillStyle = grad; this.ctx.fill();
+                this.ctx.strokeStyle = 'rgba(0,0,0,0.3)'; this.ctx.lineWidth = 1; this.ctx.stroke();
+
+                this.ctx.fillStyle = 'white'; this.ctx.font = `bold ${size}px Arial`;
+                this.ctx.textAlign = 'center'; this.ctx.textBaseline = 'middle';
+                this.ctx.fillText(symbolMap[type], x, y + size*0.1);
+            }
+        }
+
+        // ==========================================
+        // 2-2. Three.js Engine: 3D Viewer
+        // ==========================================
+        class AtomEngine3D {
+            constructor(container) {
+                this.container = container;
+                this.scene = new THREE.Scene();
+                this.scene.background = null; 
+                
+                this.camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 1, 1000);
+                this.camera.position.z = 450;
+                
+                const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+                this.scene.add(ambientLight);
+                const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+                dirLight.position.set(100, 200, 300);
+                this.scene.add(dirLight);
+
+                this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+                this.renderer.setPixelRatio(window.devicePixelRatio);
+                this.renderer.setSize(container.clientWidth, container.clientHeight);
+                this.container.appendChild(this.renderer.domElement);
+
+                this.atomGroup = new THREE.Group();
+                this.scene.add(this.atomGroup);
+                this.nucleusGroup = new THREE.Group();
+                this.atomGroup.add(this.nucleusGroup);
+
+                this.electrons = [];
+                this.orbits = [];
+                this.particleSize = 14;
+                this.orbitRadius = 150;
+
+                this.isDragging = false;
+                this.targetRotationX = 0;
+                this.targetRotationY = 0;
+                this.previousMousePosition = { x: 0, y: 0 };
+                
+                this.setupEvents();
+
+                this.currentP = -1; this.currentN = -1; this.currentE = -1;
+
+                this.animate = this.animate.bind(this);
+                this.animationId = requestAnimationFrame(this.animate);
+            }
+
+            setupEvents() {
+                const onDown = (e) => {
+                    this.isDragging = true;
+                    this.previousMousePosition = { x: e.clientX || e.touches?.[0].clientX, y: e.clientY || e.touches?.[0].clientY };
+                };
+                const onMove = (e) => {
+                    if (this.isDragging) {
+                        const cx = e.clientX || e.touches?.[0].clientX;
+                        const cy = e.clientY || e.touches?.[0].clientY;
+                        this.targetRotationX += (cx - this.previousMousePosition.x) * 0.01;
+                        this.targetRotationY += (cy - this.previousMousePosition.y) * 0.01;
+                        this.previousMousePosition = { x: cx, y: cy };
+                    }
+                };
+                const onUp = () => { this.isDragging = false; };
+
+                this.renderer.domElement.addEventListener('mousedown', onDown);
+                this.renderer.domElement.addEventListener('mousemove', onMove);
+                window.addEventListener('mouseup', onUp);
+                this.renderer.domElement.addEventListener('touchstart', onDown, {passive: false});
+                this.renderer.domElement.addEventListener('touchmove', onMove, {passive: false});
+                window.addEventListener('touchend', onUp);
+
+                this.resizeHandler = () => {
+                    if(!this.container) return;
+                    if(this.container.clientWidth === 0 || this.container.clientHeight === 0) return;
+                    this.camera.aspect = this.container.clientWidth / this.container.clientHeight;
+                    this.camera.updateProjectionMatrix();
+                    this.renderer.setSize(this.container.clientWidth, this.container.clientHeight);
+                };
+                
+                this.resizeObserver = new ResizeObserver(this.resizeHandler);
+                this.resizeObserver.observe(this.container);
+            }
+
+            cleanup() {
+                cancelAnimationFrame(this.animationId);
+                if (this.resizeObserver) this.resizeObserver.disconnect();
+                if (this.renderer && this.renderer.domElement) {
+                    this.renderer.domElement.remove();
+                }
+            }
+
+            syncParticles(pCount, nCount, eCount) {
+                if (this.currentP === pCount && this.currentN === nCount && this.currentE === eCount) return;
+                this.currentP = pCount; this.currentN = nCount; this.currentE = eCount;
+
+                while(this.nucleusGroup.children.length > 0) this.nucleusGroup.remove(this.nucleusGroup.children[0]);
+                this.electrons.forEach(e => this.atomGroup.remove(e));
+                this.electrons = [];
+                this.orbits.forEach(o => this.atomGroup.remove(o));
+                this.orbits = [];
+
+                const matProton = new THREE.MeshPhongMaterial({ color: 0xef4444, shininess: 80 });
+                const matNeutron = new THREE.MeshPhongMaterial({ color: 0x64748b, shininess: 80 });
+                const matElectron = new THREE.MeshPhongMaterial({ color: 0x06b6d4, shininess: 100 });
+                const geoParticle = new THREE.SphereGeometry(this.particleSize, 32, 32);
+
+                const totalNucleons = pCount + nCount;
+                if (totalNucleons > 0) {
+                    let radius = this.particleSize;
+                    if (totalNucleons > 1) radius = this.particleSize * Math.pow(totalNucleons, 1/3) * 0.6;
+
+                    const nucleons = new Array(totalNucleons).fill('n');
+                    if (pCount > 0) {
+                        const step = totalNucleons / pCount;
+                        for (let i = 0; i < pCount; i++) {
+                            let index = Math.floor(i * step);
+                            if(index < totalNucleons) nucleons[index] = 'p';
+                        }
+                    }
+
+                    const phi = Math.PI * (3 - Math.sqrt(5));
+                    if (totalNucleons === 1) {
+                        const mesh = new THREE.Mesh(geoParticle, nucleons[0] === 'p' ? matProton : matNeutron);
+                        this.nucleusGroup.add(mesh);
+                    } else {
+                        nucleons.forEach((type, i) => {
+                            const offset = 2.0 / totalNucleons;
+                            const y = 1.0 - (i * offset) - (offset / 2.0);
+                            const r = Math.sqrt(1 - y * y);
+                            const theta = phi * i;
+                            const mesh = new THREE.Mesh(geoParticle, type === 'p' ? matProton : matNeutron);
+                            mesh.position.set(
+                                Math.cos(theta) * r * radius + (Math.random() - 0.5) * 1.5,
+                                y * radius + (Math.random() - 0.5) * 1.5,
+                                Math.sin(theta) * r * radius + (Math.random() - 0.5) * 1.5
+                            );
+                            this.nucleusGroup.add(mesh);
+                        });
+                    }
+                }
+
+                const orbitMaterial = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.15 });
+                const orbitPoints = [];
+                for (let j = 0; j <= 64; j++) {
+                    const angle = (j / 64) * Math.PI * 2;
+                    orbitPoints.push(new THREE.Vector3(Math.cos(angle) * this.orbitRadius, Math.sin(angle) * this.orbitRadius, 0));
+                }
+                const orbitGeometry = new THREE.BufferGeometry().setFromPoints(orbitPoints);
+
+                const maxEPerShell = [2, 8, 8, 18];
+                const shellScales = [0.4, 0.7, 1.0, 1.3];
+
+                for (let i = 0; i < eCount; i++) {
+                    let targetShell = 0, currentCap = 0;
+                    for (let s = 0; s < maxEPerShell.length; s++) {
+                        currentCap += maxEPerShell[s];
+                        if (i < currentCap) { targetShell = s; break; }
+                    }
+
+                    const orbit = new THREE.LineLoop(orbitGeometry, orbitMaterial);
+                    const scale = shellScales[targetShell];
+                    orbit.scale.set(scale, scale, scale);
+                    orbit.rotation.x = Math.random() * Math.PI;
+                    orbit.rotation.y = Math.random() * Math.PI;
+                    this.atomGroup.add(orbit);
+                    this.orbits.push(orbit);
+
+                    const electron = new THREE.Mesh(new THREE.SphereGeometry(this.particleSize * 0.5, 16, 16), matElectron);
+                    electron.userData = { 
+                        angle: Math.random() * Math.PI * 2, 
+                        speed: (0.02 - targetShell * 0.003) + Math.random() * 0.005, 
+                        orbit: orbit,
+                        radius: this.orbitRadius * scale
+                    };
+                    this.atomGroup.add(electron);
+                    this.electrons.push(electron);
+                }
+            }
+
+            animate() {
+                this.animationId = requestAnimationFrame(this.animate);
+                this.atomGroup.rotation.y += (this.targetRotationX - this.atomGroup.rotation.y) * 0.1;
+                this.atomGroup.rotation.x += (this.targetRotationY - this.atomGroup.rotation.x) * 0.1;
+
+                this.electrons.forEach(electron => {
+                    electron.userData.angle += electron.userData.speed;
+                    const angle = electron.userData.angle;
+                    const orbit = electron.userData.orbit;
+                    const localPos = new THREE.Vector3(Math.cos(angle) * electron.userData.radius, Math.sin(angle) * electron.userData.radius, 0);
+                    localPos.applyEuler(orbit.rotation);
+                    electron.position.copy(localPos);
+                });
+                this.renderer.render(this.scene, this.camera);
+            }
+        }
+
+        // ==========================================
+        // 3. React Components
+        // ==========================================
+        const { useState, useEffect, useRef, useMemo, useCallback } = React;
+
+        const getIsotopeInfo = (p, n) => {
+            if (p === 0) return { name: '입자 없음', symbol: '?', isotope: '-', stability: '-', color: 'text-gray-400' };
+            const elem = ELEMENTS[p] || { name: '무거운 원소', symbol: '?' };
+            let isotope = `${elem.name}-${p+n}`;
+            let stability = '정보 없음';
+            let color = 'text-white';
+
+            if (ISOTOPE_DATA[p]) {
+                const data = ISOTOPE_DATA[p];
+                if (data.isotopes[n]) isotope = data.isotopes[n];
+                if (data.stable.includes(n)) { stability = '안정적 (자연계 존재)'; color = 'text-green-400'; }
+                else if (data.unstable.includes(n)) { stability = '불안정 (방사성 붕괴)'; color = 'text-orange-400'; }
+                else { stability = '존재 확률 극히 낮음'; color = 'text-red-500'; }
+            } else if (p < ELEMENTS.length) {
+                const ratio = n / p;
+                if (ratio >= 1.0 && ratio <= 1.3) { stability = '안정적 (추정)'; color = 'text-green-400'; }
+                else { stability = '불안정 (추정)'; color = 'text-orange-400'; }
+            }
+            return { name: elem.name, symbol: elem.symbol, isotope, stability, color };
+        };
+
+        const AlertModal = ({ isOpen, message, onClose }) => {
+            if (!isOpen) return null;
+            return (
+                <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+                    <div className="glass-panel p-6 rounded-2xl max-w-sm w-full text-center border-t border-white/20 shadow-2xl">
+                        <div className="text-4xl mb-4">⚠️</div>
+                        <p className="text-lg text-white mb-6 whitespace-pre-wrap leading-relaxed">{message}</p>
+                        <button onClick={onClose} className="glass-button w-full py-3 rounded-xl font-bold text-white tracking-wider">확인</button>
+                    </div>
+                </div>
+            );
+        };
+
+        const AdminGuideModal = ({ isOpen, onClose }) => {
+            const [copied, setCopied] = useState(false);
+            if (!isOpen) return null;
+            const scriptCode = `function doPost(e) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  var data = JSON.parse(e.postData.contents);
+  sheet.appendRow([
+    data.timestamp, data.studentId, data.studentName, 
+    data.protons, data.electrons, data.charge,
+    data.quizScore, data.insight
+  ]);
+  return ContentService.createTextOutput(JSON.stringify({"result":"success"})).setMimeType(ContentService.MimeType.JSON);
+}`;
+            const handleCopy = () => {
+                const textarea = document.createElement('textarea');
+                textarea.value = scriptCode;
+                document.body.appendChild(textarea);
+                textarea.select();
+                try { document.execCommand('copy'); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch (err) {}
+                document.body.removeChild(textarea);
+            };
+
+            return (
+                <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+                    <div className="glass-panel p-6 rounded-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto text-white shadow-2xl">
+                        <div className="flex justify-between items-center mb-6">
+                            <h2 className="text-2xl font-bold">⚙️ DB 연동 가이드</h2>
+                            <button onClick={onClose} className="text-gray-400 hover:text-white text-2xl">&times;</button>
+                        </div>
+                        <div className="space-y-6 text-sm">
+                            <div className="bg-white/5 p-4 rounded-xl">
+                                <h3 className="font-bold text-primary mb-2">1. 구글 시트 준비</h3>
+                                <p className="text-gray-300">1행 헤더: 시간 | 학번 | 이름 | 양성자수 | 전자수 | 전하 | 퀴즈점수 | 알게된점</p>
+                            </div>
+                            <div className="bg-white/5 p-4 rounded-xl relative group">
+                                <h3 className="font-bold text-primary mb-2">2. Apps Script 작성</h3>
+                                <pre className="bg-black/50 p-4 rounded text-xs font-mono overflow-x-auto text-green-300 pr-24">{scriptCode}</pre>
+                                <button onClick={handleCopy} className="absolute top-4 right-4 bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded-lg text-xs font-bold transition-all">
+                                    {copied ? '✅ 복사됨' : '📋 코드 복사'}
+                                </button>
+                            </div>
+                            <div className="bg-white/5 p-4 rounded-xl">
+                                <h3 className="font-bold text-primary mb-2">3. 배포 및 설정</h3>
+                                <p className="text-gray-300">웹 앱으로 배포 후 발급된 URL을 파일 상단 GOOGLE_SCRIPT_URL에 붙여넣으세요.</p>
+                            </div>
+                        </div>
+                        <div className="mt-8 text-center text-gray-500 text-xs">Created by Yang DH</div>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- Main App Component ---
+        const App = () => {
+            const [view, setView] = useState('intro');
+            const [alertData, setAlertData] = useState({ isOpen: false, msg: '' });
+            const [isGuideOpen, setIsGuideOpen] = useState(false);
+            
+            const [atomState, setAtomState] = useState({ protons: 0, neutrons: 0, electrons: 0 });
+            
+            const [studentInfo, setStudentInfo] = useState({ studentId: '', studentName: '', insight: '' });
+            const [quizzes, setQuizzes] = useState([]);
+            const [answers, setAnswers] = useState([null, null, null]);
+            const [isSubmitting, setIsSubmitting] = useState(false);
+
+            useEffect(() => {
+                const shuffled = [...QUIZ_POOL].sort(() => 0.5 - Math.random());
+                setQuizzes(shuffled.slice(0, 3));
+            }, []);
+
+            const submitData = async () => {
+                if (!studentInfo.studentId || !studentInfo.studentName || !studentInfo.insight) {
+                    setAlertData({ isOpen: true, msg: "학번, 이름, 알게 된 점을 모두 입력해주세요." }); return;
+                }
+                if (answers.includes(null)) {
+                    setAlertData({ isOpen: true, msg: "모든 OX 퀴즈를 풀어주세요." }); return;
+                }
+                if (!GOOGLE_SCRIPT_URL) {
+                    setAlertData({ isOpen: true, msg: "관리자 가이드를 참고하여 GOOGLE_SCRIPT_URL을 설정해주세요." }); return;
+                }
+
+                setIsSubmitting(true);
+                const score = answers.reduce((acc, ans, idx) => acc + (ans === quizzes[idx].a ? 1 : 0), 0) * 33.3;
+                const chargeDiff = atomState.protons - atomState.electrons;
+                let chargeStr = "중성";
+                if (chargeDiff > 0) chargeStr = `+${chargeDiff} 이온`;
+                if (chargeDiff < 0) chargeStr = `${chargeDiff} 이온`;
+
+                const payload = {
+                    timestamp: new Date().toLocaleString(), studentId: studentInfo.studentId, studentName: studentInfo.studentName,
+                    protons: atomState.protons, electrons: atomState.electrons, charge: chargeStr, quizScore: Math.round(score), insight: studentInfo.insight
+                };
+
+                try {
+                    await fetch(GOOGLE_SCRIPT_URL, { method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                    setView('done');
+                } catch (err) {
+                    setAlertData({ isOpen: true, msg: "데이터 전송에 실패했습니다." });
+                } finally {
+                    setIsSubmitting(false);
+                }
+            };
+
+            const resetSimulation = () => {
+                setAtomState({ protons: 0, neutrons: 0, electrons: 0 });
+                setStudentInfo({ studentId: '', studentName: '', insight: '' });
+                setAnswers([null, null, null]);
+                setQuizzes([...QUIZ_POOL].sort(() => 0.5 - Math.random()).slice(0, 3));
+                setView('intro');
+            };
+
+            return (
+                <div className="relative w-full h-screen overflow-hidden flex flex-col font-sans select-none bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-slate-900 via-[#0f172a] to-black">
+                    <div className="absolute inset-0 z-0 opacity-20 pointer-events-none" style={{ backgroundImage: 'radial-gradient(circle, #ffffff 1px, transparent 1px)', backgroundSize: '30px 30px' }}></div>
+                    
+                    <button onClick={() => setIsGuideOpen(true)} className="absolute top-4 right-4 z-[60] text-white/50 hover:text-white text-sm flex items-center gap-1 glass-panel px-3 py-1.5 rounded-full transition-all">
+                        ⚙️ 가이드
+                    </button>
+
+                    <div className="relative z-10 w-full h-full flex flex-col items-center justify-center">
+                        {view === 'intro' && <IntroView onStart={() => setView('simulation')} />}
+                        {view === 'simulation' && <SimulationView state={atomState} setState={setAtomState} onReport={() => setView('report')} showAlert={(msg)=>setAlertData({isOpen: true, msg})} />}
+                        {view === 'report' && <ReportView state={atomState} info={studentInfo} setInfo={setStudentInfo} quizzes={quizzes} answers={answers} setAnswers={setAnswers} onSubmit={submitData} onBack={() => setView('simulation')} />}
+                        {view === 'done' && <DoneView onReset={resetSimulation} />}
+                    </div>
+
+                    {isSubmitting && (
+                        <div className="fixed inset-0 z-[200] bg-black/80 flex flex-col items-center justify-center">
+                            <div className="w-16 h-16 border-4 border-primary border-t-transparent rounded-full animate-spin"></div>
+                            <div className="mt-4 text-white font-bold tracking-widest animate-pulse">데이터 전송 중...</div>
+                        </div>
+                    )}
+                    <AlertModal isOpen={alertData.isOpen} message={alertData.msg} onClose={() => setAlertData({ isOpen: false, msg: '' })} />
+                    <AdminGuideModal isOpen={isGuideOpen} onClose={() => setIsGuideOpen(false)} />
+                </div>
+            );
+        };
+
+        // --- View 1: Intro ---
+        const IntroView = ({ onStart }) => (
+            <div className="flex flex-col items-center justify-center p-6 w-full max-w-2xl text-center">
+                <div className="relative w-48 h-48 mb-8 animate-spin-slow">
+                    <svg viewBox="0 0 100 100" className="w-full h-full text-primary opacity-80 drop-shadow-[0_0_15px_rgba(59,130,246,0.5)]">
+                        <circle cx="50" cy="50" r="10" fill="currentColor" />
+                        <ellipse cx="50" cy="50" rx="40" ry="15" fill="none" stroke="currentColor" strokeWidth="2" transform="rotate(30 50 50)" />
+                        <ellipse cx="50" cy="50" rx="40" ry="15" fill="none" stroke="currentColor" strokeWidth="2" transform="rotate(90 50 50)" />
+                        <ellipse cx="50" cy="50" rx="40" ry="15" fill="none" stroke="currentColor" strokeWidth="2" transform="rotate(150 50 50)" />
+                        <circle cx="85" cy="65" r="4" fill="#06b6d4" className="animate-pulse" />
+                        <circle cx="15" cy="35" r="4" fill="#06b6d4" className="animate-pulse" style={{animationDelay: '0.5s'}} />
+                    </svg>
+                </div>
+                <h1 className="text-4xl md:text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-400 mb-4 drop-shadow-lg">직접 빚어내는 원자</h1>
+                <p className="text-gray-300 mb-8 text-lg md:text-xl font-light">나만의 원자를 자유롭게 만들거나,<br/>미션에 도전하여 원자의 비밀을 완벽하게 파헤쳐보세요!</p>
+                <button onClick={onStart} className="glass-button px-10 py-4 rounded-full text-xl font-bold tracking-wide w-full md:w-auto shadow-[0_0_20px_rgba(59,130,246,0.4)]">시뮬레이션 시작하기</button>
+                <div className="absolute bottom-6 text-white/30 text-xs font-mono tracking-widest">Created by Yang DH</div>
+            </div>
+        );
+
+        // --- View 2: Simulation (Hybrid 2D/3D + Tab System) ---
+        const SimulationView = ({ state, setState, onReport, showAlert }) => {
+            const canvas2DRef = useRef(null);
+            const container3DRef = useRef(null);
+            const engine2DRef = useRef(null);
+            const engine3DRef = useRef(null);
+            
+            const [viewMode, setViewMode] = useState('2D'); 
+            const [simMode, setSimMode] = useState('sandbox'); // 'sandbox', 'mission', 'table'
+            
+            // 미션 상태
+            const [missions, setMissions] = useState([]);
+            const [missionIndex, setMissionIndex] = useState(0);
+            const [revealedCells, setRevealedCells] = useState({});
+
+            // 엔진 초기화
+            useEffect(() => {
+                if (canvas2DRef.current && !engine2DRef.current) {
+                    engine2DRef.current = new AtomEngine2D(canvas2DRef.current, (p, n, e) => {
+                        setState({ protons: p, neutrons: n, electrons: e });
+                    });
+                }
+                if (container3DRef.current && !engine3DRef.current) {
+                    engine3DRef.current = new AtomEngine3D(container3DRef.current);
+                }
+                return () => { engine2DRef.current?.cleanup(); engine3DRef.current?.cleanup(); };
+            }, []);
+
+            // 엔진 상태 동기화
+            useEffect(() => {
+                if (engine2DRef.current) engine2DRef.current.syncParticles(state.protons, state.neutrons, state.electrons);
+                if (engine3DRef.current) engine3DRef.current.syncParticles(state.protons, state.neutrons, state.electrons);
+            }, [state]);
+
+            // 랜덤 미션 생성기 (최초 1회)
+            useEffect(() => {
+                const generateMissions = () => {
+                    const targets = [];
+                    const used = new Set();
+                    while(targets.length < 3) {
+                        const p = Math.floor(Math.random() * 12) + 1; // 1번(수소) ~ 12번(마그네슘) 랜덤 추출
+                        if (!used.has(p)) {
+                            used.add(p);
+                            let n = p; 
+                            if (ISOTOPE_DATA[p] && ISOTOPE_DATA[p].stable.length > 0) {
+                                n = ISOTOPE_DATA[p].stable[0]; // 가장 안정한 중성자 수 선택
+                            }
+                            targets.push({ p, n, e: p, name: ELEMENTS[p].name, symbol: ELEMENTS[p].symbol, completed: false });
+                        }
+                    }
+                    setMissions(targets);
+                };
+                generateMissions();
+            }, []);
+
+            const updateParticle = (type, delta) => {
+                setState(prev => {
+                    const next = { ...prev };
+                    if (type === 'p') next.protons = Math.max(0, Math.min(20, next.protons + delta));
+                    if (type === 'n') next.neutrons = Math.max(0, Math.min(30, next.neutrons + delta));
+                    if (type === 'e') next.electrons = Math.max(0, Math.min(20, next.electrons + delta));
+                    return next;
+                });
+            };
+
+            const toggleFullscreen = () => {
+                if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(()=>{});
+                else if (document.exitFullscreen) document.exitFullscreen();
+            };
+
+            // 미션 정답 확인 로직
+            const checkMission = () => {
+                if (!missions[missionIndex]) return;
+                const m = missions[missionIndex];
+                
+                // 안정성 체크 (데이터가 없으면 근사치 허용)
+                const isStable = ISOTOPE_DATA[m.p] ? ISOTOPE_DATA[m.p].stable.includes(state.neutrons) : (state.neutrons >= m.p && state.neutrons <= m.p + 2);
+                
+                if (state.protons === m.p && state.electrons === m.e && isStable) {
+                    // 정답 처리
+                    const newMissions = [...missions];
+                    newMissions[missionIndex].completed = true;
+                    setMissions(newMissions);
+                    
+                    if (missionIndex < 2) {
+                        showAlert(`🎉 정답입니다!\n다음 원소를 만들어 보세요.`);
+                        setMissionIndex(missionIndex + 1);
+                        setState({ protons: 0, neutrons: 0, electrons: 0 }); // 캔버스 비우기
+                    } else {
+                        showAlert(`🏆 축하합니다!\n모든 미션을 완수했습니다.\n결과 표 탭이 잠금 해제되었습니다!`);
+                        setSimMode('table');
+                    }
+                } else {
+                    // 오답 피드백
+                    let msg = "❌ 아직 정답이 아닙니다.\n\n";
+                    if (state.protons !== m.p) msg += `- 양성자 수는 원자 번호(${m.p})와 같아야 합니다.\n`;
+                    if (!isStable) msg += `- 중성자 수를 조절하여 안정한 원자핵을 만드세요.\n`;
+                    if (state.electrons !== m.e) msg += `- 중성 원자는 전자 수와 양성자 수가 같습니다.`;
+                    showAlert(msg);
+                }
+            };
+
+            // 표 셀 공개
+            const revealCell = (id) => {
+                setRevealedCells(prev => ({...prev, [id]: true}));
+            };
+
+            // 데이터 계산
+            const info = getIsotopeInfo(state.protons, state.neutrons);
+            const netCharge = state.protons - state.electrons;
+            const glowClass = netCharge > 0 ? 'shadow-[inset_0_0_100px_rgba(239,68,68,0.15)]' : netCharge < 0 ? 'shadow-[inset_0_0_100px_rgba(6,182,212,0.15)]' : '';
+            const allMissionsComplete = missions.length > 0 && missions.every(m => m.completed);
+
+            return (
+                <div className={`w-full h-full flex flex-col md:flex-row relative transition-all duration-700 ${glowClass}`}>
+                    
+                    {/* Left Control Panel (Table 모드일 때는 캔버스 전체를 덮도록 처리하므로 이 패널은 유지하되 내용을 바꿀 수 있음) */}
+                    <div className={`md:w-80 w-full p-4 flex flex-col gap-4 z-20 overflow-y-auto custom-scrollbar flex-shrink-0 transition-opacity ${simMode === 'table' ? 'opacity-0 pointer-events-none absolute' : 'opacity-100 relative'}`}>
+                        
+                        {/* Tab Switcher */}
+                        <div className="flex bg-black/40 rounded-xl p-1 shrink-0 shadow-inner">
+                            <button onClick={()=>setSimMode('sandbox')} className={`flex-1 py-2 text-sm font-bold rounded-lg transition-all ${simMode==='sandbox'?'bg-primary text-white shadow-md':'text-gray-400 hover:text-white'}`}>자유 탐구</button>
+                            <button onClick={()=>setSimMode('mission')} className={`flex-1 py-2 text-sm font-bold rounded-lg transition-all ${simMode==='mission'?'bg-secondary text-white shadow-md':'text-gray-400 hover:text-white'}`}>미션 도전</button>
+                            <button onClick={()=>{ if(allMissionsComplete) setSimMode('table'); else showAlert("모든 미션을 완료해야 표를 볼 수 있습니다."); }} className={`flex-1 py-2 text-sm font-bold rounded-lg transition-all ${simMode==='table'?'bg-green-500 text-white shadow-md':'text-gray-400 hover:text-white'}`}>결과 표 {allMissionsComplete?'':'🔒'}</button>
+                        </div>
+
+                        {/* Top Context Panel: Sandbox vs Mission */}
+                        {simMode === 'sandbox' && (
+                            <div className="glass-panel p-5 rounded-2xl flex flex-col relative overflow-hidden shrink-0 animate-fade-in">
+                                <div className="absolute -right-4 -top-4 text-8xl font-black text-white/5 pointer-events-none">{info.symbol}</div>
+                                <h2 className="text-gray-400 text-sm font-bold mb-1">현재 원소 (자유 탐구)</h2>
+                                <div className="text-3xl font-black text-white mb-1 drop-shadow-md">{info.isotope}</div>
+                                <div className={`text-sm font-bold ${info.color}`}>{info.stability}</div>
+                            </div>
+                        )}
+
+                        {simMode === 'mission' && missions.length > 0 && (
+                            <div className="glass-panel p-5 rounded-2xl flex flex-col relative overflow-hidden border border-secondary/50 shrink-0 animate-fade-in">
+                                <div className="flex justify-between items-center mb-2">
+                                    <h2 className="text-secondary font-bold text-lg">미션 {missionIndex + 1} / 3</h2>
+                                    <span className="text-xs bg-secondary/20 text-secondary px-2 py-1 rounded-full">{missions.filter(m=>m.completed).length}/3 완료</span>
+                                </div>
+                                <p className="text-white font-bold mb-2 leading-tight">
+                                    <span className="text-2xl text-blue-300 block mb-1">{missions[missionIndex].name}</span> 중성 원자 만들기
+                                </p>
+                                <p className="text-gray-300 text-xs mb-4 leading-relaxed">
+                                    - 원자 번호: {missions[missionIndex].p}번<br/>
+                                    - 힌트: 가장 안정한 중성자 수는 {missions[missionIndex].n}개<br/>
+                                    <span className="text-blue-300 mt-1 inline-block">💡 팁: 바구니에서 드래그하거나 버튼을 눌러보세요.</span>
+                                </p>
+                                <button onClick={checkMission} className="glass-button w-full py-3 rounded-xl font-bold text-white bg-gradient-to-r from-emerald-500 to-teal-500 shadow-lg text-sm">
+                                    이 모형으로 정답 확인 ✔️
+                                </button>
+                            </div>
+                        )}
+
+                        {/* Particle Controls (Shared) */}
+                        <div className="glass-panel p-5 rounded-2xl shrink-0">
+                            <h3 className="text-gray-400 mb-3 text-sm font-bold">입자 구성 제어</h3>
+                            
+                            <div className="flex justify-between items-center mb-3">
+                                <span className="flex items-center gap-2 text-red-400"><span className="w-3 h-3 rounded-full bg-red-500"></span>양성자</span>
+                                <div className="flex items-center gap-3">
+                                    <button className="ctrl-btn text-white" onClick={()=>updateParticle('p', -1)} disabled={state.protons <= 0}>-</button>
+                                    <span className="font-mono text-xl w-6 text-center text-white">{state.protons}</span>
+                                    <button className="ctrl-btn text-white" onClick={()=>updateParticle('p', 1)} disabled={state.protons >= 20}>+</button>
+                                </div>
+                            </div>
+                            
+                            <div className="flex justify-between items-center mb-3">
+                                <span className="flex items-center gap-2 text-slate-400"><span className="w-3 h-3 rounded-full bg-slate-500"></span>중성자</span>
+                                <div className="flex items-center gap-3">
+                                    <button className="ctrl-btn text-white" onClick={()=>updateParticle('n', -1)} disabled={state.neutrons <= 0}>-</button>
+                                    <span className="font-mono text-xl w-6 text-center text-white">{state.neutrons}</span>
+                                    <button className="ctrl-btn text-white" onClick={()=>updateParticle('n', 1)} disabled={state.neutrons >= 30}>+</button>
+                                </div>
+                            </div>
+
+                            <div className="flex justify-between items-center">
+                                <span className="flex items-center gap-2 text-cyan-400"><span className="w-3 h-3 rounded-full bg-cyan-500"></span>전자</span>
+                                <div className="flex items-center gap-3">
+                                    <button className="ctrl-btn text-white" onClick={()=>updateParticle('e', -1)} disabled={state.electrons <= 0}>-</button>
+                                    <span className="font-mono text-xl w-6 text-center text-white">{state.electrons}</span>
+                                    <button className="ctrl-btn text-white" onClick={()=>updateParticle('e', 1)} disabled={state.electrons >= 20}>+</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Charge Calculation Panel (Shared) */}
+                        <div className="glass-panel p-5 rounded-2xl shrink-0">
+                            <h3 className="text-gray-400 mb-3 text-sm font-bold flex items-center gap-2">⚡ 전하량 실시간 계산</h3>
+                            <div className="bg-black/30 p-3 rounded-xl space-y-2 text-sm text-gray-300">
+                                <div className="flex justify-between items-center">
+                                    <span>원자핵 전하 : <span className="text-red-400">(+1)</span> × {state.protons}</span>
+                                    <span className="font-bold text-red-400">+{state.protons}</span>
+                                </div>
+                                <div className="flex justify-between items-center">
+                                    <span>전자 전하 : <span className="text-cyan-400">(-1)</span> × {state.electrons}</span>
+                                    <span className="font-bold text-cyan-400">-{state.electrons}</span>
+                                </div>
+                                <div className="h-px w-full bg-white/20 my-1"></div>
+                                <div className="flex justify-between items-center text-lg text-white">
+                                    <span>총 전하량</span>
+                                    <span className={`font-black ${netCharge > 0 ? 'text-red-400' : netCharge < 0 ? 'text-cyan-400' : 'text-green-400'}`}>
+                                        {netCharge > 0 ? '+' : ''}{netCharge}
+                                    </span>
+                                </div>
+                            </div>
+                            <div className="mt-3 text-center">
+                                <span className={`px-4 py-1 rounded-full text-sm font-bold bg-white/10 ${netCharge > 0 ? 'text-red-400' : netCharge < 0 ? 'text-cyan-400' : 'text-white'}`}>
+                                    상태: {netCharge > 0 ? '양이온' : netCharge < 0 ? '음이온' : '중성 원자'}
+                                </span>
+                            </div>
+                        </div>
+                        
+                        <div className="mt-auto hidden md:block shrink-0">
+                            <button onClick={onReport} className="glass-button w-full py-3 rounded-xl font-bold text-white shadow-lg">최종 보고서 작성 📝</button>
+                        </div>
+                    </div>
+
+                    {/* Right Canvas Area / Table Overlay */}
+                    <div className="flex-1 relative touch-none overflow-hidden">
+                        
+                        {/* Table View Overlay */}
+                        {simMode === 'table' && (
+                            <div className="absolute inset-0 z-40 bg-darkBg/95 backdrop-blur-xl p-4 md:p-10 overflow-y-auto custom-scrollbar flex flex-col items-center animate-fade-in">
+                                <h2 className="text-2xl md:text-3xl font-black text-green-400 mb-6 flex items-center gap-2">✨ 미션 결과 정리표 ✨</h2>
+                                <p className="text-gray-300 mb-8 text-sm md:text-base">회색 덮개를 <span className="font-bold text-white bg-white/20 px-2 py-1 rounded">클릭</span>하여 숨겨진 정답을 확인해보세요.</p>
+                                
+                                <div className="w-full max-w-4xl overflow-x-auto rounded-2xl border border-white/20 shadow-2xl bg-black/40">
+                                    <table className="w-full text-center whitespace-nowrap">
+                                        <thead>
+                                            <tr className="bg-white/10 text-white">
+                                                <th className="p-4 border-b border-r border-white/20">구분</th>
+                                                {missions.map((m, i) => <th key={i} className="p-4 border-b border-white/20 text-lg text-blue-300">{m.name}({m.symbol})</th>)}
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {/* Row 1: 양성자 수 */}
+                                            <tr>
+                                                <td className="p-4 border-b border-r border-white/20 font-bold bg-white/5 text-gray-300">양성자 수</td>
+                                                {missions.map((m, i) => <td key={i} className="p-4 border-b border-white/20 text-red-400 font-mono text-xl">{m.p}</td>)}
+                                            </tr>
+                                            {/* Row 2: 전자 수 */}
+                                            <tr>
+                                                <td className="p-4 border-b border-r border-white/20 font-bold bg-white/5 text-gray-300">전자 수</td>
+                                                {missions.map((m, i) => (
+                                                    <td key={i} className="p-0 border-b border-white/20 relative w-1/4 h-16">
+                                                        <div className="w-full h-full flex items-center justify-center text-cyan-400 font-mono text-xl">{m.e}</div>
+                                                        {!revealedCells[`e-${i}`] && (
+                                                            <div onClick={()=>revealCell(`e-${i}`)} className="absolute inset-0 bg-slate-700 hover:bg-slate-600 cursor-pointer flex items-center justify-center text-white/80 font-bold transition-colors">클릭</div>
+                                                        )}
+                                                    </td>
+                                                ))}
+                                            </tr>
+                                            {/* Row 3: 원자핵 총 전하량 */}
+                                            <tr>
+                                                <td className="p-4 border-b border-r border-white/20 font-bold bg-white/5 text-gray-300">원자핵 전하량</td>
+                                                {missions.map((m, i) => (
+                                                    <td key={i} className="p-0 border-b border-white/20 relative w-1/4 h-16">
+                                                        <div className="w-full h-full flex items-center justify-center text-red-400 font-mono text-xl">+{m.p}</div>
+                                                        {!revealedCells[`cp-${i}`] && (
+                                                            <div onClick={()=>revealCell(`cp-${i}`)} className="absolute inset-0 bg-slate-700 hover:bg-slate-600 cursor-pointer flex items-center justify-center text-white/80 font-bold transition-colors">클릭</div>
+                                                        )}
+                                                    </td>
+                                                ))}
+                                            </tr>
+                                            {/* Row 4: 전자 총 전하량 */}
+                                            <tr>
+                                                <td className="p-4 border-r border-white/20 font-bold bg-white/5 text-gray-300">전자 전하량</td>
+                                                {missions.map((m, i) => (
+                                                    <td key={i} className="p-0 border-white/20 relative w-1/4 h-16">
+                                                        <div className="w-full h-full flex items-center justify-center text-cyan-400 font-mono text-xl">-{m.e}</div>
+                                                        {!revealedCells[`ce-${i}`] && (
+                                                            <div onClick={()=>revealCell(`ce-${i}`)} className="absolute inset-0 bg-slate-700 hover:bg-slate-600 cursor-pointer flex items-center justify-center text-white/80 font-bold transition-colors">클릭</div>
+                                                        )}
+                                                    </td>
+                                                ))}
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                                <button onClick={()=>setSimMode('sandbox')} className="mt-8 glass-button px-8 py-3 rounded-xl font-bold text-white shadow-lg text-lg">자유 탐구로 돌아가기 ↺</button>
+                            </div>
+                        )}
+
+                        {/* Top Controls (Only visible when not in table mode) */}
+                        <div className={`absolute top-4 left-4 z-30 flex gap-2 transition-opacity ${simMode === 'table' ? 'opacity-0' : 'opacity-100'}`}>
+                            <button onClick={()=>setViewMode('2D')} className={`px-4 py-2 rounded-lg font-bold text-sm transition-all ${viewMode==='2D'?'bg-blue-500 text-white shadow-lg':'bg-white/10 text-gray-400 hover:bg-white/20'}`}>2D 빌더</button>
+                            <button onClick={()=>setViewMode('3D')} className={`px-4 py-2 rounded-lg font-bold text-sm transition-all ${viewMode==='3D'?'bg-purple-500 text-white shadow-lg':'bg-white/10 text-gray-400 hover:bg-white/20'}`}>3D 뷰어</button>
+                        </div>
+                        
+                        <div className={`absolute top-4 right-16 md:right-4 z-30 flex gap-2 transition-opacity ${simMode === 'table' ? 'opacity-0' : 'opacity-100'}`}>
+                            <button onClick={()=>setState({protons:0, neutrons:0, electrons:0})} className="bg-white/10 hover:bg-white/20 px-3 py-2 rounded-lg font-bold text-sm text-white transition-all">초기화 ↺</button>
+                            <button onClick={toggleFullscreen} className="bg-white/10 hover:bg-white/20 px-3 py-2 rounded-lg font-bold text-sm text-white transition-all hidden md:block">⛶</button>
+                        </div>
+
+                        {/* Canvases */}
+                        <canvas ref={canvas2DRef} className={`absolute inset-0 w-full h-full transition-opacity duration-300 ${(simMode === 'sandbox' || simMode === 'mission') && viewMode === '2D' ? 'opacity-100 z-10' : 'opacity-0 z-0 pointer-events-none'}`}></canvas>
+                        <div ref={container3DRef} className={`absolute inset-0 w-full h-full transition-opacity duration-300 ${(simMode === 'sandbox' || simMode === 'mission') && viewMode === '3D' ? 'opacity-100 z-10' : 'opacity-0 z-0 pointer-events-none'}`}></div>
+                        
+                        {/* Mobile bottom button */}
+                        <div className={`absolute bottom-4 left-4 right-4 md:hidden z-30 transition-opacity ${simMode === 'table' ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
+                            <button onClick={onReport} className="glass-button w-full py-3 rounded-xl font-bold text-white">최종 보고서 작성 📝</button>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- View 3: Report ---
+        const ReportView = ({ state, info, setInfo, quizzes, answers, setAnswers, onSubmit, onBack }) => {
+            const handleAnswer = (qIdx, isTrue) => {
+                const newAnswers = [...answers]; newAnswers[qIdx] = isTrue; setAnswers(newAnswers);
+            };
+            const isAllAnswered = !answers.includes(null);
+            const netCharge = state.protons - state.electrons;
+            const elementInfo = getIsotopeInfo(state.protons, state.neutrons);
+
+            return (
+                <div className="w-full h-full overflow-y-auto p-4 md:p-8 custom-scrollbar relative">
+                    <div className="max-w-4xl mx-auto space-y-6 pb-20">
+                        <div className="flex justify-between items-center mb-8">
+                            <h2 className="text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-400">실험 결과 보고서</h2>
+                            <button onClick={onBack} className="text-gray-400 hover:text-white px-4 py-2 rounded-lg bg-white/5">← 실험으로 돌아가기</button>
+                        </div>
+
+                        <div className="glass-panel p-6 rounded-2xl">
+                            <h3 className="text-xl font-bold text-blue-300 mb-4 flex items-center gap-2">📊 마지막 원자 상태</h3>
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
+                                <div className="bg-white/5 p-4 rounded-xl border border-white/10">
+                                    <div className="text-gray-400 text-sm mb-1">양성자</div><div className="text-2xl font-mono text-red-400">{state.protons}개</div>
+                                </div>
+                                <div className="bg-white/5 p-4 rounded-xl border border-white/10">
+                                    <div className="text-gray-400 text-sm mb-1">전자</div><div className="text-2xl font-mono text-cyan-400">{state.electrons}개</div>
+                                </div>
+                                <div className="bg-white/5 p-4 rounded-xl border border-white/10">
+                                    <div className="text-gray-400 text-sm mb-1">전하 상태</div>
+                                    <div className={`text-xl font-bold mt-1 ${netCharge>0?'text-red-400':netCharge<0?'text-cyan-400':'text-white'}`}>{netCharge === 0 ? '중성' : (netCharge > 0 ? `+${netCharge} 양이온` : `${netCharge} 음이온`)}</div>
+                                </div>
+                                <div className="bg-white/5 p-4 rounded-xl border border-white/10">
+                                    <div className="text-gray-400 text-sm mb-1">최종 원소</div><div className="text-xl font-bold mt-1 text-white">{elementInfo.isotope}</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="glass-panel p-6 rounded-2xl flex flex-col md:flex-row gap-4">
+                            <div className="flex-1">
+                                <label className="block text-sm text-gray-400 mb-2">학번</label>
+                                <input type="text" placeholder="예: 30101" value={info.studentId} onChange={(e) => setInfo({...info, studentId: e.target.value})} className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-primary transition-colors" />
+                            </div>
+                            <div className="flex-1">
+                                <label className="block text-sm text-gray-400 mb-2">이름</label>
+                                <input type="text" placeholder="홍길동" value={info.studentName} onChange={(e) => setInfo({...info, studentName: e.target.value})} className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-primary transition-colors" />
+                            </div>
+                        </div>
+
+                        <div className="glass-panel p-6 rounded-2xl">
+                            <label className="block text-sm text-gray-400 mb-2">알게 된 점 (실험을 통해 배운 원자의 구조, 동위원소, 전하량 특징)</label>
+                            <textarea rows="3" placeholder="양성자 수를 바꾸니 원소가 달라졌고, 전자 수와 다르면 이온이 됨을 알 수 있었다 등..." value={info.insight} onChange={(e) => setInfo({...info, insight: e.target.value})} className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-primary transition-colors resize-none"></textarea>
+                        </div>
+
+                        <div className="glass-panel p-6 rounded-2xl">
+                            <h3 className="text-xl font-bold text-secondary mb-4 flex items-center gap-2">🧠 개념 확인 퀴즈</h3>
+                            <div className="space-y-4">
+                                {quizzes.map((q, idx) => (
+                                    <div key={idx} className={`p-4 rounded-xl border ${answers[idx] !== null ? (answers[idx] === q.a ? 'bg-green-900/20 border-green-500/50' : 'bg-red-900/20 border-red-500/50') : 'bg-white/5 border-white/10'}`}>
+                                        <p className="text-lg mb-3">Q{idx + 1}. {q.q}</p>
+                                        <div className="flex gap-2 mb-3">
+                                            <button onClick={() => handleAnswer(idx, true)} className={`flex-1 py-2 rounded-lg font-bold text-xl transition-all ${answers[idx] === true ? 'bg-blue-500 text-white' : 'bg-black/40 text-gray-400 hover:bg-black/60'}`}>O</button>
+                                            <button onClick={() => handleAnswer(idx, false)} className={`flex-1 py-2 rounded-lg font-bold text-xl transition-all ${answers[idx] === false ? 'bg-blue-500 text-white' : 'bg-black/40 text-gray-400 hover:bg-black/60'}`}>X</button>
+                                        </div>
+                                        {answers[idx] !== null && (
+                                            <div className={`text-sm p-3 rounded-lg ${answers[idx] === q.a ? 'text-green-300 bg-green-500/10' : 'text-red-300 bg-red-500/10'}`}>
+                                                {answers[idx] === q.a ? '🎉 정답입니다!' : '❌ 오답입니다.'} <br/><span className="text-gray-300 mt-1 block">해설: {q.explain}</span>
+                                            </div>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+
+                        <button onClick={onSubmit} className={`w-full py-4 rounded-xl font-bold text-xl tracking-wider transition-all ${isAllAnswered && info.studentId && info.studentName && info.insight ? 'glass-button text-white' : 'bg-gray-700/50 text-gray-500 cursor-not-allowed'}`}>
+                            결과 제출하기
+                        </button>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- View 4: Done ---
+        const DoneView = ({ onReset }) => (
+            <div className="flex flex-col items-center justify-center p-6 w-full max-w-md text-center animate-fade-in">
+                <div className="text-7xl mb-6">🚀</div>
+                <h2 className="text-3xl font-black text-white mb-4">제출 완료!</h2>
+                <p className="text-gray-300 mb-8">원자의 구조와 특성에 대해<br/>성공적으로 탐구했습니다.</p>
+                <button onClick={onReset} className="glass-button px-8 py-3 rounded-xl font-bold w-full text-white">다시 실험하기</button>
+            </div>
+        );
+
+        // Mount App
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
